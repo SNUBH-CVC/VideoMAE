@@ -13,17 +13,17 @@ from datasets import build_pretraining_dataset
 from engine_for_pretraining import train_one_epoch
 from utils import NativeScalerWithGradNormCount as NativeScaler
 import utils
-import modeling_pretrain
+import modeling_pretrain  # 이 부분 없으면 model이 registry에 등록 안됨.
 
 
 def get_args():
     parser = argparse.ArgumentParser('VideoMAE pre-training script', add_help=False)
-    parser.add_argument('--batch_size', default=64, type=int)
-    parser.add_argument('--epochs', default=800, type=int)
-    parser.add_argument('--save_ckpt_freq', default=50, type=int)
+    parser.add_argument('--batch_size', default=32, type=int)
+    parser.add_argument('--epochs', default=300, type=int)
+    parser.add_argument('--save_ckpt_freq', default=2, type=int)
 
     # Model parameters
-    parser.add_argument('--model', default='pretrain_videomae_base_patch16_224', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='pretrain_videomae_base_patch32_512', type=str, metavar='MODEL',
                         help='Name of model to train')
 
     parser.add_argument('--decoder_depth', default=4, type=int,
@@ -32,10 +32,10 @@ def get_args():
     parser.add_argument('--mask_type', default='tube', choices=['random', 'tube'],
                         type=str, help='masked strategy of video tokens/patches')
 
-    parser.add_argument('--mask_ratio', default=0.75, type=float,
+    parser.add_argument('--mask_ratio', default=0.5, type=float,
                         help='ratio of the visual tokens/patches need be masked')
 
-    parser.add_argument('--input_size', default=224, type=int,
+    parser.add_argument('--input_size', default=512, type=int,
                         help='videos input size for backbone')
 
     parser.add_argument('--drop_path', type=float, default=0.0, metavar='PCT',
@@ -82,16 +82,16 @@ def get_args():
                         help='Training interpolation (random, bilinear, bicubic default: "bicubic")')
 
     # Dataset parameters
-    parser.add_argument('--data_path', default='/path/to/list_kinetics-400', type=str,
+    parser.add_argument('--data_path', default='./cag_ccta_1yr_xa.csv', type=str,
                         help='dataset path')
     parser.add_argument('--imagenet_default_mean_and_std', default=True, action='store_true')
-    parser.add_argument('--num_frames', type=int, default= 16)
-    parser.add_argument('--sampling_rate', type=int, default= 4)
-    parser.add_argument('--output_dir', default='',
+    parser.add_argument('--num_frames', type=int, default=6)
+    parser.add_argument('--sampling_rate', type=int, default=2)
+    parser.add_argument('--output_dir', default='./logs',
                         help='path where to save, empty for no saving')
     parser.add_argument('--log_dir', default=None,
                         help='path where to tensorboard log')
-    parser.add_argument('--device', default='cuda',
+    parser.add_argument('--device', default='cuda:1',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--resume', default='', help='resume from checkpoint')
@@ -101,7 +101,7 @@ def get_args():
 
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
-    parser.add_argument('--num_workers', default=10, type=int)
+    parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--pin_mem', action='store_true',
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem',
@@ -121,7 +121,7 @@ def get_args():
 def get_model(args):
     print(f"Creating model: {args.model}")
     model = create_model(
-        args.model,
+        args.model,  # ('timm', 'pretrain_videomae_base_patch16_224')
         pretrained=False,
         drop_path_rate=args.drop_path,
         drop_block_rate=None,

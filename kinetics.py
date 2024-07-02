@@ -12,7 +12,8 @@ from torch.utils.data import Dataset
 import video_transforms as video_transforms 
 import volume_transforms as volume_transforms
 
-class VideoClsDataset(Dataset):
+
+class VideoClsDataset(torch.utils.data.Dataset):
     """Load your own video classification dataset."""
 
     def __init__(self, anno_path, data_path, mode='train', clip_len=8,
@@ -442,7 +443,7 @@ class VideoMAE(torch.utils.data.Dataset):
                  lazy_init=False):
 
         super(VideoMAE, self).__init__()
-        self.root = root
+        self.root = root  # None
         self.setting = setting
         self.train = train
         self.test_mode = test_mode
@@ -553,4 +554,11 @@ class VideoMAE(torch.utils.data.Dataset):
             sampled_list = [Image.fromarray(video_data[vid, :, :, :]).convert('RGB') for vid, _ in enumerate(frame_id_list)]
         except:
             raise RuntimeError('Error occured in reading frames {} from video {} of duration {}.'.format(frame_id_list, directory, duration))
+
+        # sampled_list = [
+        #   (H, W, C),
+        #   (H, W, C),
+        #       ...
+        # ]
+        # len(sampled_list): Time
         return sampled_list

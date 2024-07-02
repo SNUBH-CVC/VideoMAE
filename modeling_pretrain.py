@@ -20,6 +20,8 @@ __all__ = [
     'pretrain_videomae_base_patch16_224', 
     'pretrain_videomae_large_patch16_224', 
     'pretrain_videomae_huge_patch16_224',
+    'pretrain_videomae_base_patch16_512',
+    'pretrain_videomae_base_patch32_512',
 ]
 
 
@@ -34,10 +36,15 @@ class PretrainVisionTransformerEncoder(nn.Module):
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.patch_embed = PatchEmbed(
-            img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,tubelet_size=tubelet_size)
+            img_size=img_size,
+            patch_size=patch_size,
+            in_chans=in_chans,
+            embed_dim=embed_dim,
+            num_frames=6,
+            tubelet_size=tubelet_size
+        )
         num_patches = self.patch_embed.num_patches
         self.use_checkpoint = use_checkpoint
-
 
         # TODO: Add the cls token
         if use_learnable_pos_emb:
@@ -45,7 +52,7 @@ class PretrainVisionTransformerEncoder(nn.Module):
         else:
             # sine-cosine positional embeddings 
             self.pos_embed = get_sinusoid_encoding_table(num_patches, embed_dim)
-
+        # self.pos_embed.shape: (1, 3072, 768)
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
         self.blocks = nn.ModuleList([
             Block(
@@ -86,14 +93,16 @@ class PretrainVisionTransformerEncoder(nn.Module):
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
     def forward_features(self, x, mask):
-        _, _, T, _, _ = x.shape
-        x = self.patch_embed(x)
-        
+        _, _, T, _, _ = x.shape  # x.shape: (batch_size=4, channel=1, time=6, height=512, width=512)
+        x = self.patch_embed(x)  # x.shape: (batch_size=4, (6//2)*(512//patch_size)*(512//patch_size), 1536)
         x = x + self.pos_embed.type_as(x).to(x.device).clone().detach()
-
+        # x.shape: (4, 3072, 768)
+        # mask.shape: (4, 3072)
         B, _, C = x.shape
         x_vis = x[~mask].reshape(B, -1, C) # ~mask means visible
-
+        # x_vis.shape: (4, 768(=3072 * 0.25), 768)
+        #   전체 patch는 3072개이지만, 그중 75%는 masking되어 사라지고
+        #   나머지 25%(=768개)만 남는다.
         if self.use_checkpoint:
             for blk in self.blocks:
                 x_vis = checkpoint.checkpoint(blk, x_vis)
@@ -109,6 +118,7 @@ class PretrainVisionTransformerEncoder(nn.Module):
         x = self.head(x)
         return x
 
+
 class PretrainVisionTransformerDecoder(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
     """
@@ -118,7 +128,7 @@ class PretrainVisionTransformerDecoder(nn.Module):
                  ):
         super().__init__()
         self.num_classes = num_classes
-        assert num_classes == 3 * tubelet_size * patch_size ** 2 
+        assert num_classes == 1 * tubelet_size * patch_size ** 2 
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.patch_size = patch_size
         self.use_checkpoint = use_checkpoint
@@ -161,19 +171,23 @@ class PretrainVisionTransformerDecoder(nn.Module):
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
     def forward(self, x, return_token_num):
+        # return_token_num: 2304 = masking된 patch 개수
+        # x.shape: (B=4, 3072, 384)
+        #   3072: 앞부분 768개는 masking되지 않은 patch, 뒷부분 2304개는 masking된 patch에 대한 것
+        #   384: embedding dimension
+
         if self.use_checkpoint:
             for blk in self.blocks:
                 x = checkpoint.checkpoint(blk, x)
         else:   
             for blk in self.blocks:
                 x = blk(x)
-
         if return_token_num > 0:
             x = self.head(self.norm(x[:, -return_token_num:])) # only return the mask tokens predict pixels
         else:
             x = self.head(self.norm(x))
-
         return x
+
 
 class PretrainVisionTransformer(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
@@ -205,6 +219,11 @@ class PretrainVisionTransformer(nn.Module):
                  in_chans=0, # avoid the error from create_fn in timm
                  ):
         super().__init__()
+        print("\n")
+        print(f"img_size={img_size}")
+        print(f"patch_size={patch_size}")
+        print("\n")
+
         self.encoder = PretrainVisionTransformerEncoder(
             img_size=img_size, 
             patch_size=patch_size, 
@@ -244,13 +263,14 @@ class PretrainVisionTransformer(nn.Module):
             use_checkpoint=use_checkpoint)
 
         self.encoder_to_decoder = nn.Linear(encoder_embed_dim, decoder_embed_dim, bias=False)
-
+        # TODO: learnable인지 확인?
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
 
         self.pos_embed = get_sinusoid_encoding_table(self.encoder.patch_embed.num_patches, decoder_embed_dim)
-
+        # self.pos_embed.shape: (1, 3072, 384)
+        #   3072: patch 개수
+        #   384: decoder_embed_dim
         trunc_normal_(self.mask_token, std=.02)
-
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -271,16 +291,36 @@ class PretrainVisionTransformer(nn.Module):
     def forward(self, x, mask):
         _, _, T, _, _ = x.shape
         x_vis = self.encoder(x, mask) # [B, N_vis, C_e]
+        # x_vis.shape: (B=4, 768, 768)
+        #   768: masking되지 않고 살아남은(?) patch 개수
+        #   768: encoder_embed_dim
         x_vis = self.encoder_to_decoder(x_vis) # [B, N_vis, C_d]
+        # x_vis.shape: (B=4, 768, 384)
+        #   768: masking되지 않고 살아남은(?) patch 개수
+        #   384: decoder_embed_dim
         B, N, C = x_vis.shape
         # we don't unshuffle the correct visible token order, 
         # but shuffle the pos embedding accorddingly.
         expand_pos_embed = self.pos_embed.expand(B, -1, -1).type_as(x).to(x.device).clone().detach()
+        # expand_pos_embed.shape: (B=4, 3072, 384)
+        
         pos_emd_vis = expand_pos_embed[~mask].reshape(B, -1, C)
+        # pos_emd_vis.shape: (B=4, 768, 384)
+        #   768: masking되지 않고 살아남은 patch 개수, 전체 patch 개수(3072)의 25%
+        #   384: decoder_embed_dim
         pos_emd_mask = expand_pos_embed[mask].reshape(B, -1, C)
-        x_full = torch.cat([x_vis + pos_emd_vis, self.mask_token + pos_emd_mask], dim=1) # [B, N, C_d]
-        x = self.decoder(x_full, pos_emd_mask.shape[1]) # [B, N_mask, 3 * 16 * 16]
+        # pos_emd_mask.shape: (B=4, 2304, 384)
+        #   2304: masking된 patch 개수, 전체 patch 개수(3072)의 75%
+        #   384: decoder_embed_dim
 
+        # masking된 부분은 encoder에서 예측한 embedding이 없으므로 self.mask_token을 가져와 사용한다.
+        x_full = torch.cat([
+            x_vis + pos_emd_vis,
+            self.mask_token + pos_emd_mask
+        ], dim=1)  # [B, N, C_d]
+        # x_full.shape: (4, 3072, 384)
+        
+        x = self.decoder(x_full, pos_emd_mask.shape[1]) # [B, N_mask, 3 * 16 * 16]
         return x
 
 @register_model
@@ -306,6 +346,60 @@ def pretrain_videomae_small_patch16_224(pretrained=False, **kwargs):
         )
         model.load_state_dict(checkpoint["model"])
     return model
+
+
+@register_model
+def pretrain_videomae_base_patch16_512(pretrained=False, **kwargs):
+    model = PretrainVisionTransformer(
+        img_size=512,
+        patch_size=16,
+        encoder_in_chans=1,
+        encoder_num_classes=0,
+        encoder_embed_dim=768,
+        encoder_depth=12, 
+        encoder_num_heads=12,
+        # decoder_num_classes=1536,  # TODO: 확인
+        decoder_num_classes=512,  # 1 * 2 * 16 * 16
+        decoder_embed_dim=384,
+        decoder_num_heads=6,
+        mlp_ratio=4, 
+        qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), 
+        **kwargs)
+    model.default_cfg = _cfg()
+    if pretrained:
+        checkpoint = torch.load(
+            kwargs["init_ckpt"], map_location="cpu"
+        )
+        model.load_state_dict(checkpoint["model"])
+    return model
+
+
+@register_model
+def pretrain_videomae_base_patch32_512(pretrained=False, **kwargs):
+    model = PretrainVisionTransformer(
+        img_size=512,
+        patch_size=32,
+        encoder_in_chans=1,
+        encoder_num_classes=0,
+        encoder_embed_dim=768,
+        encoder_depth=12, 
+        encoder_num_heads=12,
+        decoder_num_classes=2048,  # 1 * 2 * 32 * 32
+        decoder_embed_dim=384,
+        decoder_num_heads=6,
+        mlp_ratio=4, 
+        qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), 
+        **kwargs)
+    model.default_cfg = _cfg()
+    if pretrained:
+        checkpoint = torch.load(
+            kwargs["init_ckpt"], map_location="cpu"
+        )
+        model.load_state_dict(checkpoint["model"])
+    return model
+
 
 @register_model
 def pretrain_videomae_base_patch16_224(pretrained=False, **kwargs):

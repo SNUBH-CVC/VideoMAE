@@ -100,12 +100,16 @@ class GroupMultiScaleCrop(object):
 
     def __call__(self, img_tuple):
         img_group, label = img_tuple
-        
-        im_size = img_group[0].size
+        # img_group[0].shape = (H, W, C)
+        # len(img_group): Time
+        im_size = img_group[0].size  
 
         crop_w, crop_h, offset_w, offset_h = self._sample_crop_size(im_size)
         crop_img_group = [img.crop((offset_w, offset_h, offset_w + crop_w, offset_h + crop_h)) for img in img_group]
         ret_img_group = [img.resize((self.input_size[0], self.input_size[1]), self.interpolation) for img in crop_img_group]
+        
+        # ret_img_group[0].shape = (input_size, input_size, C)
+        # len(img_group): Time
         return (ret_img_group, label)
 
     def _sample_crop_size(self, im_size):

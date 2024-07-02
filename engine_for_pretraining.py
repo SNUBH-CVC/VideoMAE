@@ -32,30 +32,40 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, optimizer: to
 
         videos, bool_masked_pos = batch
         videos = videos.to(device, non_blocking=True)
+        # videos.shape: (B=4, C=1, T=6, H=512, W=512)
         bool_masked_pos = bool_masked_pos.to(device, non_blocking=True).flatten(1).to(torch.bool)
+        # bool_masked_pos.shape: (B=4, 3072)
+        #    3072 = # of patches = (T // 2) * (H // patch_size) * (W // patch_size)
+        
+        
+        # with torch.no_grad():
+        #     # calculate the predict label
+        #     mean = torch.as_tensor(IMAGENET_DEFAULT_MEAN).to(device)[None, :, None, None, None]
+        #     std = torch.as_tensor(IMAGENET_DEFAULT_STD).to(device)[None, :, None, None, None]
+        #     unnorm_videos = videos * std + mean  # in [0, 1]
 
+        #     if normlize_target:
+        #         videos_squeeze = rearrange(unnorm_videos, 'b c (t p0) (h p1) (w p2) -> b (t h w) (p0 p1 p2) c', p0=2, p1=patch_size, p2=patch_size)
+        #         videos_norm = (videos_squeeze - videos_squeeze.mean(dim=-2, keepdim=True)
+        #             ) / (videos_squeeze.var(dim=-2, unbiased=True, keepdim=True).sqrt() + 1e-6)
+        #         # we find that the mean is about 0.48 and standard deviation is about 0.08.
+        #         videos_patch = rearrange(videos_norm, 'b n p c -> b n (p c)')
+        #     else:
+        #         videos_patch = rearrange(unnorm_videos, 'b c (t p0) (h p1) (w p2) -> b (t h w) (p0 p1 p2 c)', p0=2, p1=patch_size, p2=patch_size)
         with torch.no_grad():
-            # calculate the predict label
-            mean = torch.as_tensor(IMAGENET_DEFAULT_MEAN).to(device)[None, :, None, None, None]
-            std = torch.as_tensor(IMAGENET_DEFAULT_STD).to(device)[None, :, None, None, None]
-            unnorm_videos = videos * std + mean  # in [0, 1]
-
-            if normlize_target:
-                videos_squeeze = rearrange(unnorm_videos, 'b c (t p0) (h p1) (w p2) -> b (t h w) (p0 p1 p2) c', p0=2, p1=patch_size, p2=patch_size)
-                videos_norm = (videos_squeeze - videos_squeeze.mean(dim=-2, keepdim=True)
-                    ) / (videos_squeeze.var(dim=-2, unbiased=True, keepdim=True).sqrt() + 1e-6)
-                # we find that the mean is about 0.48 and standard deviation is about 0.08.
-                videos_patch = rearrange(videos_norm, 'b n p c -> b n (p c)')
-            else:
-                videos_patch = rearrange(unnorm_videos, 'b c (t p0) (h p1) (w p2) -> b (t h w) (p0 p1 p2 c)', p0=2, p1=patch_size, p2=patch_size)
-
+            videos_patch = rearrange(videos, 'b c (t p0) (h p1) (w p2) -> b (t h w) (p0 p1 p2 c)', p0=2, p1=patch_size, p2=patch_size)
             B, _, C = videos_patch.shape
-            labels = videos_patch[bool_masked_pos].reshape(B, -1, C)
-
+            # videos_patch.shape: (B=4, 3072, 512)
+            #   3072 = # of patches = (T // 2) * (H // patch_size) * (W // patch_size)
+            #   512 = patch 1개가 차지하는 voxel 개수 = 1 * 2 * 16 * 16
+            labels = videos_patch[bool_masked_pos]
+            labels = labels.reshape(B, -1, C)
+            # labels.shape: (B=4, 2304, 512)
+            #   2304 = masking된 patch 개수
+            #   512 = patch 1개가 차지하는 voxel 개수 = 1 * 2 * 16 * 16
         with torch.cuda.amp.autocast():
             outputs = model(videos, bool_masked_pos)
             loss = loss_func(input=outputs, target=labels)
-
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):
